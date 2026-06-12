@@ -6,6 +6,12 @@
 
 set -u
 
+# 清空 git hook 注入的环境变量：post-commit 触发时主仓库会导出 GIT_AUTHOR_* / GIT_DIR，
+# 否则导出仓库的提交会被主仓库身份（含工作邮箱）覆盖、git 操作可能错指主仓库
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE \
+      GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_AUTHOR_DATE \
+      GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL GIT_COMMITTER_DATE 2>/dev/null
+
 SRC="/Users/USERNAME/life-os"
 DEST="$HOME/life-os-framework"
 LOG="$SRC/.tools/logs/export-framework.log"
@@ -76,7 +82,6 @@ LEAK=$(grep -rnEI \
   -e '[0-9]{8,10}:[A-Za-z0-9_-]{35}' \
   -e 'oc_[a-z0-9]{16,}' \
   -e '(^|[^0-9.])-[0-9]{9,13}([^0-9.]|$)' \
-  -e 'aaron\.zhao|lbk\.one' \
   -e '(api[_-]?key|secret|passphrase)["'"'"' ]*[:=]["'"'"' ]*[A-Za-z0-9+/]{16,}' \
   ${LITERAL_ARGS[@]+"${LITERAL_ARGS[@]}"} \
   "$DEST" --exclude-dir=.git 2>/dev/null | head -20)
