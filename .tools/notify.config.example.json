@@ -1,0 +1,18 @@
+{
+  "enabled_channels": ["lark"],
+  "lark": {
+    "_comment": "用 lark-cli 调飞书应用机器人发消息。lark-cli 自带 app_id+secret 鉴权，本配置只需要告诉脚本发到谁。",
+    "default_receive_id": "oc_REPLACE_ME",
+    "receive_id_type": "chat_id",
+    "routes": {
+      "_comment": "按 route key 路由到不同收件人；找不到 key 时 fallback default_receive_id。示例：\"career\": \"oc_xxx\", \"finance\": \"oc_yyy\""
+    }
+  },
+  "telegram": {
+    "_comment": "可选通道；填了 bot_token + default_chat_id 才会启用。enabled_channels 加 \"telegram\" 才会真发。",
+    "bot_token": "",
+    "default_chat_id": "",
+    "routes": {
+    }
+  }
+}
