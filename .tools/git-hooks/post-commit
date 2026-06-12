@@ -1,0 +1,10 @@
+#!/bin/bash
+# post-commit — 提交涉及框架白名单路径时，异步触发公共框架仓库导出
+# 安装：cp .tools/git-hooks/post-commit .git/hooks/post-commit && chmod +x .git/hooks/post-commit
+# 白名单口径与 .tools/export-framework.sh 保持一致
+
+CHANGED=$(git diff-tree --no-commit-id --name-only -r HEAD)
+
+if echo "$CHANGED" | grep -qE '^(CLAUDE\.md|README\.md|AGENTS\.md|\.gitignore|\.claude/|\.tools/|01_wiki/_meta/|04_career/(README\.md|_tools/)|05_finance/(README\.md|_tools/|_import/))'; then
+  nohup "$(git rev-parse --show-toplevel)/.tools/export-framework.sh" >/dev/null 2>&1 &
+fi
