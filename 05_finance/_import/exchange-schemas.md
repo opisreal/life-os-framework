@@ -1,6 +1,6 @@
 ---
 type: import-schema
-updated: 2026-06-12
+updated: 2026-06-13
 ---
 # 交易所导出文件 → 内部字段映射
 
@@ -57,7 +57,7 @@ updated: 2026-06-12
 
 来源：`GET /api/v2/mix/position/history-position`（MVP-1.6 API 轨道，归一化在 `_tools/fetch_bitget.py`）。
 
-**字段映射**：
+**字段映射**（✅ **已锁定**——2026-06-13 用 W23 已落盘 9 行与 API 同窗口拉取 9/9 逐行对账验证）：
 
 | API 字段 | 内部字段 | 规则 |
 |---|---|---|
@@ -67,13 +67,15 @@ updated: 2026-06-12
 | openAvgPrice | open_avg | 原样保留字符串 |
 | closeAvgPrice | close_avg | 原样保留字符串 |
 | closeTotalPos | qty | 原样保留字符串（API 无单位后缀，无需剥离） |
-| totalFunding + openFee + closeFee | fee | 折叠公式同 CSV：`fee = −(totalFunding+openFee+closeFee)`，经 `_fmt_num` 规范化 |
-| uTime | close_time | 毫秒时间戳 → `YYYY-MM-DD HH:MM:SS`，**固定 UTC+8**（与 CSV 同口径，不依赖本机时区） |
-| pnl | realized_pnl（**暂定**） | 见下方警告 |
+| totalFunding + openFee + closeFee | fee | 折叠公式同 CSV：`fee = −(totalFunding+openFee+closeFee)`，经 `_fmt_num` 规范化。手续费为负、资金费有符号 |
+| utime | close_time | 毫秒时间戳 → `YYYY-MM-DD HH:MM:SS`，**固定 UTC+8**（与 CSV 同口径，不依赖本机时区）。**注意：真实返回为小写 `utime`/`ctime`**，与官方文档 `uTime`/`cTime` 不符；归一化兼容大写变体兜底 |
+| pnl | realized_pnl | **= CSV「已实现盈亏」= 毛价格盈亏**（不含费用），9/9 对账锁定 |
+| netProfit | （不落盘，校验和） | **= CSV「仓位盈亏」= 净盈亏**：`netProfit == pnl + totalFunding + openFee + closeFee`。归一化保留 `pnl_raw`/`net_profit_raw` 供未来审计（writer 按 STORE_FIELDS 过滤，不落盘） |
+| marginMode | （暂不落盘） | 取值 `crossed`/`isolated`（注意与 CSV 导出的 `Cross`/`Isolated` 形态不同） |
 | — | exchange / market_type / source_file | `bitget` / `futures` / `api:history-position` |
 | — | row_hash | `closed_row_hash(rec)` 仍计算（与 CSV 兜底路径互见，dedup 互盲修复已落地） |
 
-> ⚠️ **pnl 映射未锁定，待 Task N 对账**：API 返回 `pnl` 与 `netProfit` 两个候选，与 CSV 列「仓位盈亏（净）/已实现盈亏（毛）」的精确对应**尚未实测验证**。当前 `realized_pnl` 暂取 `pnl`（毛口径候选）；归一化记录额外保留 `pnl_raw` / `net_profit_raw` 两候选（不落盘，writer 按 STORE_FIELDS 过滤）。须用 W23 已落盘 9 行与 API 同窗口拉取**逐行对账**锁定映射后修订本表与 `fetch_bitget.py`（铁律 4：不编数据）。
+其余实测字段：`openTotalPos`、`marginCoin`、`posMode`——当前不落盘，留作未来扩展。
 
 **窗口约束**：私有查询类接口统一 **~3 个月回溯窗口**——更早历史只能靠 CSV 存档，形态必须是"定期增量拉 + 本地落库"。分页为游标式（`endId` + `idLessThan`，每页 ≤100），`fetch_closed_pnl` 已实现循环。
 
