@@ -7,24 +7,25 @@
 - **稳健层**（MVP-2 启用）：银行 / 基金 / 公积金等低频资产，月度导入对账单 + 净值汇总。当前未启用。
 
 ## 两个入口
-- **`/finance import`** — 模块**唯一写入口**。贴 Bitget 已平仓盈亏 CSV（截图兜底）→ 脚本去重落盘 → 末尾一条合并问答（setup 标签可跳过 / 当前权益 / 出入金默认无）。
+- **`/finance import`** — 模块**唯一写入口**。API 直拉首选（`--source api`，CSV/截图兜底）→ 脚本去重落盘 → 末尾一条合并问答（setup 标签可跳过 / 当前权益 / 出入金默认无）。周日 20:00 由 `weekly-auto-pull.sh` 全自动拉取（已平仓+权益+成交明细），本入口管周中导入/补拉/suspected 确认。
   - **"记权益"轻路径**：输入只含权益数（"记权益 / 报权益 <USDT数>"）→ 跳过导入步骤，直接写 equity 行 + commit，30 秒完成（空仓周即此路径）。
   - 行级写盘一律走 `_tools/import_closed_pnl.py`（LOADERS 分发 / 跨导入去重 / 重放豁免 / JSON 报告），LLM 只做归类确认与问答。
 - **`/finance review week`** — 周复盘。聚合 risk 三张表 + 北极星目标，产出 `reviews/weekly/<period>.md`：胜率 / 盈亏比 / 净盈亏 / 峰值回撤诊断 + setup 归因小表 + 教练评述 + 下期 Action。month/quarter/year 分支 MVP-2 起启用。
-- 旧 `/finance record`（已并入 import）与 `/finance plan`（推迟至 MVP-3）已废弃，skill 文件保留至 W26 裁决删除。
+- 旧 `/finance record`（已并入 import）与 `/finance plan`（推迟至 MVP-3）已废弃；skill 文件已按 W26 裁决（W27 补裁，2026-07-03）删除，git 史可回溯。
 
 ## risk/ 三张表
 
 | 表 | 状态 | 说明 |
 |---|---|---|
-| `risk/trades.csv` | 待启用 | 成交明细（fills）。CSV 列映射待校准；MVP-1.6 API 轨道接入后启用，解锁"亏损加仓"诊断 |
+| `risk/trades.csv` | 在用 | 成交明细（fills），**14 列**。API 轨道 2026-07-03 校准接入（tradeId 主键去重），"亏损加仓"诊断已激活；CSV 路径未校准、显式拒绝 |
 | `risk/closed-pnl.csv` | 在用 | 已平仓盈亏，**14 列**（9 字段 schema + exchange/market_type/source_file/row_hash + setup 归因列）。胜率/盈亏比/净盈亏主源 |
 | `risk/equity/<year>.csv` | 在用 | 周权益快照 **schema v2，7 列**（week/as_of/equity_usdt/usdt_cny_rate/equity_rmb/net_flow_usdt/note）。`equity_usdt` 唯一必填，回撤计算唯一主序列；汇率/RMB 惰性回填 |
 
 字段定义与去重/重放豁免规则见 `risk/_schema.md`；交易所原始列映射见 `_import/exchange-schemas.md`。
 
-## kill 判据
-4 周内主动跑不满 3 次完整 loop（import + review week 算一次）→ 砍掉 finance loop，不换形式硬撑。W23 起算，**W26 复盘统一裁决**：loop 存废、setup 列存废、废弃 skill 文件删除。加固/基建工作不计为"跑 loop"。
+## kill 判据（2026-07-03 W27 补裁定版）
+**自动周报连续 4 期（W28 起算）未获任何回应——setup 标签、出入金登记、周复盘触发、任何 finance 指令均算回应——→ 砍掉 finance loop，不再有下一次形态转换。**
+历史：旧判据"4 周内主动跑不满 3 次完整 loop"于 W26 命中（W23-W26 仅 1 次），判死人肉搬数形态，loop 以全自动形态存续（MVP-1.6 步骤②）；setup 列同期获缓刑至 W29（W28/W29 两期提示后仍全 unlabeled → 砍）。裁决全文见 `reviews/weekly/2026-W27.md` 第六节。
 
 ## trys/ 定位
 **交易实验沙箱，不入账本不进统计。** 套利脚本、刷量实验、策略草稿放这里；其产生的真实成交仍以交易所导出为准走 import 入账。
