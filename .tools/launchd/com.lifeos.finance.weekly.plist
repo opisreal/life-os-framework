@@ -7,7 +7,7 @@
     <key>ProgramArguments</key>
     <array>
         <string>/bin/bash</string>
-        <string>/Users/USERNAME/life-os/05_finance/_tools/weekly-submit-reminder.sh</string>
+        <string>/Users/USERNAME/life-os/05_finance/_tools/weekly-auto-pull.sh</string>
     </array>
     <key>StartCalendarInterval</key>
     <dict>
