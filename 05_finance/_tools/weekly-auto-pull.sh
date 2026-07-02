@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 # 步骤② 全自动周拉取（MVP-1.6 终态）：API 拉已平仓+权益+成交明细 → 写表 → commit → 通知。
 # 任何一步失败 → 降级执行 weekly-submit-reminder.sh 催促真值表（人肉 CSV 路径永远可用）。
-# fills 已于 2026-07-03 真实样本校准接入（exchange-schemas.md fills 段）。
-# 测试缝：PULL_CMD 环境变量可替换拉取命令（如 PULL_CMD=false 模拟失败分支，此时跳过 fills），launchd 正常运行不设。
+# 对账/文案组装/lint 一致性检查在 weekly_pull.py（TDD 覆盖），本脚本只做编排。
+# launchd 双槽（周日 20:00 + 21:30 重试）：同周已通知且无新增无异常 → 静默退出（marker 防重复通知）。
+# 测试缝：PULL_CMD 环境变量可替换拉取命令（如 PULL_CMD=false 模拟失败分支，此时跳过 fills）。
 set -uo pipefail
 ROOT="/Users/USERNAME/life-os"
 TOOLS="$ROOT/05_finance/_tools"
 NOTIFY="$ROOT/.tools/notify.sh"
+MARKER="$ROOT/.tools/logs/finance-auto-pull.notified"
 cd "$ROOT"
 WEEK="$(date +%G-W%V)"
 
@@ -24,63 +26,10 @@ else
   FILLS_REPORT="$(python3 "$TOOLS/import_closed_pnl.py" --source api --kind fills)" || degrade "fills 拉取退出非零"
 fi
 
-# 2) 解析报告 + 出入金对账（|ΔE − net_pnl|/prev > 5% 才追问）+ 组装通知
-OUT="$(REPORT="$REPORT" FILLS_REPORT="$FILLS_REPORT" python3 - <<'PY'
-import csv, datetime, json, os, sys
-sys.path.insert(0, "05_finance/_tools")
-from parse_trades import load_equity, compute_pnl_stats
-
-rep = json.loads(os.environ["REPORT"])
-fills_rep = json.loads(os.environ["FILLS_REPORT"])
-added, skipped, suspected = rep["added"], rep["skipped"], rep["suspected"]
-fills_added = fills_rep.get("added", 0)
-warnings = rep.get("warnings", []) + fills_rep.get("warnings", [])
-eq_info = rep.get("equity") or {}
-need_commit = added > 0 or fills_added > 0 or eq_info.get("status") == "written"
-
-recon = ""
-isoyear = datetime.date.today().isocalendar()[0]
-eq_path = f"05_finance/risk/equity/{isoyear}.csv"
-try:
-    eq = load_equity(eq_path)
-    if len(eq) >= 2:
-        prev, curr = eq[-2], eq[-1]
-        # 期间口径：上期快照日之后的回合（同日快照前成交会混入，5% 阈值下可容忍）
-        rows = [r for r in csv.DictReader(open("05_finance/risk/closed-pnl.csv"))
-                if r["close_time"] > prev["as_of"]]
-        net = compute_pnl_stats(rows)["net_pnl"]
-        p = float(prev["equity_usdt"])
-        if p > 0:
-            gap = abs(float(curr["equity_usdt"]) - p - net) / p
-            if gap > 0.05:
-                recon = f"⚠️ 出入金对账：权益变动与期间净盈亏缺口 {gap:.1%}（>5%）——本周有出入金吗？回「出入金 <±USDT数>」登记"
-except FileNotFoundError:
-    pass  # 年初新文件未建等情况，不阻塞通知
-
-if eq_info.get("status") == "written":
-    eq_line = f"权益 {eq_info['week']} = {eq_info['value']} USDT（自动行）"
-elif eq_info.get("status") == "exists":
-    eq_line = "权益本周已有行（未覆盖，如需改用「记权益 <数>」）"
-else:
-    eq_line = "⚠️ 权益行无状态（检查 --equity 分支）"
-
-parts = [f"已自动入账 {added} 回合（防重跳过 {skipped}）、成交明细 +{fills_added} 条", eq_line]
-if suspected:
-    parts.append(f"⚠️ {suspected} 行疑似重复未入库，回「导入交易」逐条确认")
-if warnings:
-    parts.append(f"⚠️ 解析 warnings {len(warnings)} 条（映射漂移嫌疑，看 launchd 日志）")
-if recon:
-    parts.append(recon)
-parts.append("回 setup 标签即出周报；无补充可直接说「周复盘」")
-
-flagged = bool(suspected or warnings or recon)
-print("COMMIT=" + ("yes" if need_commit else "no"))
-print("TITLE=" + ("⚠️ [Life OS · finance] 周材料已拉取（有待确认项）" if flagged else "✅ [Life OS · finance] 周报材料已备好"))
-print("BODY=" + "；".join(parts))
-PY
-)" || degrade "报告解析失败"
-
+# 2) 对账 + lint + 组装（weekly_pull.py，纯逻辑已测）
+OUT="$(REPORT="$REPORT" FILLS_REPORT="$FILLS_REPORT" python3 "$TOOLS/weekly_pull.py")" || degrade "报告解析失败"
 COMMIT="$(printf '%s\n' "$OUT" | sed -n 's/^COMMIT=//p')"
+FLAGGED="$(printf '%s\n' "$OUT" | sed -n 's/^FLAGGED=//p')"
 TITLE="$(printf '%s\n' "$OUT" | sed -n 's/^TITLE=//p')"
 BODY="$(printf '%s\n' "$OUT" | sed -n 's/^BODY=//p')"
 
@@ -91,5 +40,8 @@ if [ "$COMMIT" = "yes" ]; then
   git commit -m "feat(finance): weekly auto-pull ${WEEK}（自动入账+权益行+成交明细，weekly-auto-pull.sh）" || degrade "git commit 失败"
 fi
 
-# 4) 通知（周报材料就绪 / 待确认项）
-"$NOTIFY" "$TITLE" "$BODY" finance
+# 4) 通知（重试槽防重复：同周已通知且无新增无异常 → 静默）
+if [ "$COMMIT" = "no" ] && [ "$FLAGGED" = "no" ] && [ -f "$MARKER" ] && [ "$(cat "$MARKER")" = "$WEEK" ]; then
+  exit 0
+fi
+"$NOTIFY" "$TITLE" "$BODY" finance && echo "$WEEK" > "$MARKER"

@@ -10,11 +10,19 @@
         <string>/Users/USERNAME/life-os/05_finance/_tools/weekly-auto-pull.sh</string>
     </array>
     <key>StartCalendarInterval</key>
-    <dict>
-        <key>Weekday</key> <integer>0</integer>
-        <key>Hour</key>    <integer>20</integer>
-        <key>Minute</key>  <integer>0</integer>
-    </dict>
+    <array>
+        <dict>
+            <key>Weekday</key> <integer>0</integer>
+            <key>Hour</key>    <integer>20</integer>
+            <key>Minute</key>  <integer>0</integer>
+        </dict>
+        <dict>
+            <!-- 重试槽：20:00 失败（网络瞬断等）21:30 自然重试；成功后 marker 防重复通知，幂等无副作用 -->
+            <key>Weekday</key> <integer>0</integer>
+            <key>Hour</key>    <integer>21</integer>
+            <key>Minute</key>  <integer>30</integer>
+        </dict>
+    </array>
     <key>StandardOutPath</key>
     <string>/Users/USERNAME/life-os/.tools/logs/life-os-launchd.log</string>
     <key>StandardErrorPath</key>

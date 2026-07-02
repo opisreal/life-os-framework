@@ -22,6 +22,7 @@
 | `risk/equity/<year>.csv` | 在用 | 周权益快照 **schema v2，7 列**（week/as_of/equity_usdt/usdt_cny_rate/equity_rmb/net_flow_usdt/note）。`equity_usdt` 唯一必填，回撤计算唯一主序列；汇率/RMB 惰性回填 |
 
 字段定义与去重/重放豁免规则见 `risk/_schema.md`；交易所原始列映射见 `_import/exchange-schemas.md`。
+数据一致性由 `_tools/lint_finance.py` 守护（表头/哈希复现/source_id 唯一/setup 词表/equity 契约），周报自动跑一次，异常进通知；可手动 `python3 05_finance/_tools/lint_finance.py`。
 
 ## kill 判据（2026-07-03 W27 补裁定版）
 **自动周报连续 4 期（W28 起算）未获任何回应——setup 标签、出入金登记、周复盘触发、任何 finance 指令均算回应——→ 砍掉 finance loop，不再有下一次形态转换。**
