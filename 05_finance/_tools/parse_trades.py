@@ -8,6 +8,7 @@ import re
 LOADERS = {                              # 值为本模块函数名，由 CLI getattr(parse_trades, …) 分发
     ("bitget", "closed_pnl"): "load_bitget_csv",
     ("bitget", "closed_pnl_api"): "load_api_closed_pnl",   # 实现在 fetch_bitget，经下方转发 stub
+    ("bitget", "fills_api"): "load_api_fills",             # 同上（fills → trades.csv 轨道）
 }
 
 def load_api_closed_pnl(path_ignored="", kind="closed_pnl_api", **kw):
@@ -17,6 +18,11 @@ def load_api_closed_pnl(path_ignored="", kind="closed_pnl_api", **kw):
     （fetch_bitget 反向 import 本模块取 closed_row_hash/_fmt_num）。"""
     import fetch_bitget
     return fetch_bitget.load_api_closed_pnl(path_ignored, kind=kind, **kw)
+
+def load_api_fills(path_ignored="", kind="fills_api", **kw):
+    """转发 stub → fetch_bitget.load_api_fills（契约同 load_api_closed_pnl）。"""
+    import fetch_bitget
+    return fetch_bitget.load_api_fills(path_ignored, kind=kind, **kw)
 
 HASH_FIELDS = ("time", "exchange", "market_type", "symbol", "side",
                "position_side", "price", "base_qty", "fee_amount")
@@ -215,6 +221,40 @@ def dedup_fills(fills):
             else:
                 seen_hashes.add(h)
     return kept, suspected
+
+def detect_add_on_losing(fills):
+    """亏损加仓检测（周报诊断）：按 (symbol, 多/空) 分组扫开仓序列（按 time 排序），
+    后续开仓价劣于当前持仓加权均价（多头更低 / 空头更高）即记一次事件；
+    同组任一平仓视为回合结束、整组重置（部分平仓也重置——启发式，5%级诊断够用）。
+    同秒部分成交聚类为一次事件（一笔订单拆多笔 fill = 同一决策，按 time 秒级去重）。
+    输入行需含 schema §1 字段（time/symbol/position_side/price/base_qty）；
+    price/base_qty 解析失败的行跳过不计。返回事件列表：
+    [{symbol, position_side, time, price, avg_before}]。"""
+    events = []
+    pos = {}   # (symbol, "long"/"short") → (qty_sum, cost_sum)
+    seen_seconds = set()   # (symbol, ps, time[:19])：同秒聚类
+    for f in sorted(fills, key=lambda r: r.get("time", "")):
+        ps = f.get("position_side", "") or ""
+        if ps.startswith("open_"):
+            key = (f.get("symbol", ""), ps[len("open_"):])
+            try:
+                price, qty = float(f["price"]), float(f["base_qty"])
+            except (KeyError, ValueError, TypeError):
+                continue
+            q, c = pos.get(key, (0.0, 0.0))
+            if q > 0:
+                avg = c / q
+                worse = price < avg if key[1] == "long" else price > avg
+                sec_key = (key[0], ps, f.get("time", "")[:19])
+                if worse and sec_key not in seen_seconds:
+                    seen_seconds.add(sec_key)
+                    events.append({"symbol": key[0], "position_side": ps,
+                                   "time": f.get("time", ""), "price": f.get("price", ""),
+                                   "avg_before": _fmt_num(avg)})
+            pos[key] = (q + qty, c + price * qty)
+        elif ps.startswith("close_"):
+            pos.pop((f.get("symbol", ""), ps[len("close_"):]), None)
+    return events
 
 def compute_pnl_stats(closed_rounds):
     """从 Bitget 已平仓盈亏报表算胜率/盈亏比/净盈亏。一条记录=一个已平仓回合。

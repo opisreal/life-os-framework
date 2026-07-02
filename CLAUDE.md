@@ -80,7 +80,7 @@ LLM 驱动的个人知识库。基于 Karpathy LLM Wiki 模式。本文件是项
 - v2.1 重构：「稳健 + 风险」两层架构，导入型输入替代手填快照，先用 Bitget 交易 loop（MVP-1）验证习惯再扩稳健层（MVP-2）
 - 两个 finance-* skill：`finance-import`（导入型唯一写入口，按来源分流交易/支出）+ `finance-review`（week 周复盘 MVP-1；month/quarter/year MVP-2 起启用）；旧 finance-record / finance-plan 已废弃（record 并入 import，plan 推迟到 MVP-3）
 - 目标锚点迁移至 `00_north-star/goals.md`（年储蓄目标 + drawdown_cap_from_peak）；旧 `05_finance/goals/` 已标废弃、新 loop 跑通后删
-- 自动化只剩 weekly 一档：周日 20:00 全自动拉取（launchd → `weekly-auto-pull.sh`：API 拉已平仓+权益 → 写表 → commit → 通知；任何失败降级为催促探针 `weekly-submit-reminder.sh`），月/季/年三档已停；fills 待校准后接入
+- 自动化只剩 weekly 一档：周日 20:00 全自动拉取（launchd → `weekly-auto-pull.sh`：API 拉已平仓+权益 → 写表 → commit → 通知；任何失败降级为催促探针 `weekly-submit-reminder.sh`），月/季/年三档已停；fills 已校准接入（trades.csv 自动落盘，亏损加仓诊断激活）
 - 与 04_career 边界：career 管"赚钱能力"，finance 管"赚到的钱怎么用"——两个模块互相提示但不互相写
 - 与 01_wiki 边界：理财通用知识（标普家庭资产象限 / 再平衡原理）入 wiki；个人事件、目标、决策入 finance
 - 加密资产按月初汇率统一折 RMB；隐私采用明文存储，未来上云需走 README 的"双文件分层"升级路径

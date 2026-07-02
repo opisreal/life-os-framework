@@ -79,6 +79,25 @@ updated: 2026-06-13
 
 **窗口约束**：私有查询类接口统一 **~3 个月回溯窗口**——更早历史只能靠 CSV 存档，形态必须是"定期增量拉 + 本地落库"。分页为游标式（`endId` + `idLessThan`，每页 ≤100），`fetch_closed_pnl` 已实现循环。
 
-### 成交明细（fills）
+### 成交明细（fills，API）
 
-**待校准——需用户导出成交明细 CSV**。不预先猜测列名；拿到真实导出后在此补映射表。
+来源：`GET /api/v2/mix/order/fills`（归一化在 `_tools/fetch_bitget.py` `normalize_fill`，落盘 `risk/trades.csv`）。
+
+**字段映射**（✅ **已校准**——2026-07-03 用真实 API 样本 236 条实拉校准，全量 hedge_mode 实证，首拉 229 行零 warnings + 重放幂等 added=0）：
+
+| API 字段 | 内部字段 | 规则 |
+|---|---|---|
+| tradeId | source_id | 唯一主键，去重优先用；API 分页边界会返回批内重复（实测 7/236），由 CLI 批内防重吸收 |
+| cTime | time | 毫秒时间戳 → `YYYY-MM-DD HH:MM:SS.mmm`（**固定 UTC+8，含毫秒**——同秒同价同量的合法重复靠毫秒区分）。**注意：fills 真实返回大写 `cTime`**（与 history-position 的小写 `utime`/`ctime` 相反），小写 `ctime` 兜底 |
+| symbol | symbol | 原样保留 |
+| side | side | 转小写 `buy`/`sell` |
+| tradeSide + side | position_side | **hedge_mode 推导**：open+buy=`open_long`、open+sell=`open_short`、close+sell=`close_long`、close+buy=`close_short`。`posMode` 非 `hedge_mode` 或组合未知 → **整行拒绝出 warning**（单向持仓推导未实测，不猜——校准门） |
+| price / baseVolume / quoteVolume | price / base_qty / quote_qty | 原样保留字符串 |
+| feeDetail[].totalFee | fee_amount | `−Σ totalFee`（API 原值负=支出；取负后**正=成本**，同 closed-pnl 折叠口径），经 `_fmt_num`；**混币种整行拒绝**（不同单位不可求和，实测全 USDT 单条） |
+| feeDetail[0].feeCoin | fee_asset | 实测恒 `USDT` |
+| — | exchange / market_type / source_file | `bitget` / `futures` / `api:fills` |
+| — | row_hash | `parse_trades.row_hash`（fills 字段集，与 closed-pnl 的 `closed_row_hash` 不混用） |
+
+其余实测字段：`orderId`（同订单部分成交共享，不落盘——同秒聚类由诊断层按 `time[:19]` 处理）、`profit`、`enterPointSource`、`tradeScope`（taker/maker）——当前不落盘，留作未来扩展。
+
+**CSV 路径未校准**：Bitget 成交明细 CSV 导出从未拿到真实样本，`--source csv --kind fills` 显式拒绝；超 3 个月回溯窗口的历史 fills 无法补录（closed-pnl 可靠 CSV 存档，fills 不行——接受，诊断只看近期）。

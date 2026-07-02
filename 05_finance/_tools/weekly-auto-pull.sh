@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# 步骤② 全自动周拉取（MVP-1.6 终态）：API 拉已平仓+权益 → 写表 → commit → 通知。
+# 步骤② 全自动周拉取（MVP-1.6 终态）：API 拉已平仓+权益+成交明细 → 写表 → commit → 通知。
 # 任何一步失败 → 降级执行 weekly-submit-reminder.sh 催促真值表（人肉 CSV 路径永远可用）。
-# fills（成交明细）未校准，本版不拉——exchange-schemas.md fills 段补全后接入。
-# 测试缝：PULL_CMD 环境变量可替换拉取命令（如 PULL_CMD=false 模拟失败分支），launchd 正常运行不设。
+# fills 已于 2026-07-03 真实样本校准接入（exchange-schemas.md fills 段）。
+# 测试缝：PULL_CMD 环境变量可替换拉取命令（如 PULL_CMD=false 模拟失败分支，此时跳过 fills），launchd 正常运行不设。
 set -uo pipefail
 ROOT="/Users/USERNAME/life-os"
 TOOLS="$ROOT/05_finance/_tools"
@@ -15,24 +15,28 @@ degrade() {
   exec /bin/bash "$TOOLS/weekly-submit-reminder.sh"
 }
 
-# 1) 拉取（API 直拉 + 权益自动行）
+# 1) 拉取（已平仓+权益自动行；成交明细单独一拉，任一失败都降级）
 if [ -n "${PULL_CMD:-}" ]; then
   REPORT="$($PULL_CMD)" || degrade "拉取命令退出非零"
+  FILLS_REPORT='{"added":0,"skipped":0,"suspected":0,"warnings":[]}'
 else
   REPORT="$(python3 "$TOOLS/import_closed_pnl.py" --source api --equity)" || degrade "import 脚本退出非零"
+  FILLS_REPORT="$(python3 "$TOOLS/import_closed_pnl.py" --source api --kind fills)" || degrade "fills 拉取退出非零"
 fi
 
 # 2) 解析报告 + 出入金对账（|ΔE − net_pnl|/prev > 5% 才追问）+ 组装通知
-OUT="$(REPORT="$REPORT" python3 - <<'PY'
+OUT="$(REPORT="$REPORT" FILLS_REPORT="$FILLS_REPORT" python3 - <<'PY'
 import csv, datetime, json, os, sys
 sys.path.insert(0, "05_finance/_tools")
 from parse_trades import load_equity, compute_pnl_stats
 
 rep = json.loads(os.environ["REPORT"])
+fills_rep = json.loads(os.environ["FILLS_REPORT"])
 added, skipped, suspected = rep["added"], rep["skipped"], rep["suspected"]
-warnings = rep.get("warnings", [])
+fills_added = fills_rep.get("added", 0)
+warnings = rep.get("warnings", []) + fills_rep.get("warnings", [])
 eq_info = rep.get("equity") or {}
-need_commit = added > 0 or eq_info.get("status") == "written"
+need_commit = added > 0 or fills_added > 0 or eq_info.get("status") == "written"
 
 recon = ""
 isoyear = datetime.date.today().isocalendar()[0]
@@ -60,7 +64,7 @@ elif eq_info.get("status") == "exists":
 else:
     eq_line = "⚠️ 权益行无状态（检查 --equity 分支）"
 
-parts = [f"已自动入账 {added} 回合（防重跳过 {skipped}）", eq_line]
+parts = [f"已自动入账 {added} 回合（防重跳过 {skipped}）、成交明细 +{fills_added} 条", eq_line]
 if suspected:
     parts.append(f"⚠️ {suspected} 行疑似重复未入库，回「导入交易」逐条确认")
 if warnings:
@@ -83,8 +87,8 @@ BODY="$(printf '%s\n' "$OUT" | sed -n 's/^BODY=//p')"
 # 3) 有新数据才 commit（沿用 reminder 自动 commit 先例；无新增不产生空提交）
 if [ "$COMMIT" = "yes" ]; then
   ISOYEAR="$(date +%G)"
-  git add 05_finance/risk/closed-pnl.csv "05_finance/risk/equity/${ISOYEAR}.csv" || degrade "git add 失败"
-  git commit -m "feat(finance): weekly auto-pull ${WEEK}（自动入账+权益行，weekly-auto-pull.sh）" || degrade "git commit 失败"
+  git add 05_finance/risk/closed-pnl.csv 05_finance/risk/trades.csv "05_finance/risk/equity/${ISOYEAR}.csv" || degrade "git add 失败"
+  git commit -m "feat(finance): weekly auto-pull ${WEEK}（自动入账+权益行+成交明细，weekly-auto-pull.sh）" || degrade "git commit 失败"
 fi
 
 # 4) 通知（周报材料就绪 / 待确认项）

@@ -64,8 +64,9 @@ def history_position(start_ms=None, end_ms=None, id_less_than=None):
 def futures_accounts():
     return request("/api/v2/mix/account/accounts", {"productType": "USDT-FUTURES"})
 
-def fills(start_ms=None, end_ms=None):
+def fills(start_ms=None, end_ms=None, id_less_than=None):
     p = {"productType": "USDT-FUTURES", "limit": "100"}
     if start_ms: p["startTime"] = str(start_ms)
     if end_ms: p["endTime"] = str(end_ms)
+    if id_less_than: p["idLessThan"] = str(id_less_than)   # 游标分页（endId 续页，同 history_position）
     return request("/api/v2/mix/order/fills", p)

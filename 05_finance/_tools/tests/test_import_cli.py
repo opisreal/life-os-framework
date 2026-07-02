@@ -185,3 +185,67 @@ class TestEquityAuto(unittest.TestCase):
         self.assertEqual(rep["equity"]["status"], "exists")
         self.assertEqual(rep["equity"]["value"], "4255.36")
         self.assertEqual(open(self.eq_path, encoding="utf-8").read(), before)
+
+
+# ---------- --kind fills（步骤② fills 轨道）：trades.csv 落盘 ----------
+
+def _fill_item(tid, price="59689.1"):
+    """fills 单条真实形态样本（大写 cTime，2026-07-03 实测）。"""
+    return {"tradeId": tid, "symbol": "BTCUSDT", "orderId": "o1", "price": price,
+            "baseVolume": "0.0684", "quoteVolume": "4082.7344",
+            "feeDetail": [{"feeCoin": "USDT", "totalFee": "-2.44964066"}],
+            "side": "sell", "tradeSide": "close", "posMode": "hedge_mode",
+            "cTime": "1749100000500"}
+
+
+def _fill_row(tid, **kw):
+    return fetch_bitget.normalize_fill(_fill_item(tid, **kw))
+
+
+class TestImportFillsKind(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp)
+        self.store = os.path.join(self.tmp, "trades.csv")
+
+    def test_first_import_writes_trades_schema(self):
+        fetched = ([_fill_row("t1"), _fill_row("t2", price="59000")], [])
+        with mock.patch.object(fetch_bitget, "fetch_fills", return_value=fetched):
+            rep = import_closed_pnl.run_import(
+                _args(["--source", "api", "--kind", "fills", "--store", self.store]))
+        self.assertEqual(rep["added"], 2)
+        self.assertEqual(rep["skipped"], 0)
+        with open(self.store, encoding="utf-8") as fh:
+            reader = csv.DictReader(fh)
+            self.assertEqual(reader.fieldnames, import_closed_pnl.TRADES_FIELDS)   # 14 列，无 setup
+            rows = list(reader)
+        self.assertEqual(len(rows), 2)
+        self.assertNotIn("setup", rows[0])
+        self.assertTrue(all(r["row_hash"] for r in rows))
+        # date_range 用 time 字段（fills 无 close_time）；首末两元素口径同 closed_pnl
+        self.assertEqual(rep["date_range"], ["2025-06-05", "2025-06-05"])
+
+    def test_replay_idempotent_by_trade_id(self):
+        fetched = ([_fill_row("t1")], [])
+        with mock.patch.object(fetch_bitget, "fetch_fills", return_value=fetched):
+            import_closed_pnl.run_import(
+                _args(["--source", "api", "--kind", "fills", "--store", self.store]))
+            rep = import_closed_pnl.run_import(
+                _args(["--source", "api", "--kind", "fills", "--store", self.store]))
+        self.assertEqual(rep["added"], 0)
+        self.assertEqual(rep["skipped"], 1)        # tradeId 命中 = 确定重复
+        self.assertEqual(rep["suspected"], 0)
+
+    def test_fills_csv_source_not_calibrated(self):
+        # fills 的 CSV 映射未校准（exchange-schemas.md fills 段），csv 路径必须显式拒绝
+        with self.assertRaises(SystemExit):
+            import_closed_pnl.run_import(
+                _args(["--source", "csv", "--kind", "fills", FIX, "--store", self.store]))
+
+    def test_fills_warnings_surface_in_report(self):
+        fetched = ([_fill_row("t1")], ["fill tbad: posMode=one_way_mode 未校准，跳行"])
+        with mock.patch.object(fetch_bitget, "fetch_fills", return_value=fetched):
+            rep = import_closed_pnl.run_import(
+                _args(["--source", "api", "--kind", "fills", "--store", self.store]))
+        self.assertEqual(rep["added"], 1)
+        self.assertEqual(len(rep["warnings"]), 1)

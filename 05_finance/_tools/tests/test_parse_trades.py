@@ -514,3 +514,83 @@ class TestLoadEquity(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestDetectAddOnLosing(unittest.TestCase):
+    """亏损加仓检测（周报诊断）：同向开仓序列中，后续开仓价劣于当前持仓加权均价即记事件。"""
+
+    def _f(self, t, sym, ps, price, qty="1"):
+        return {"time": t, "symbol": sym, "position_side": ps, "price": price, "base_qty": qty}
+
+    def test_long_add_at_lower_price_flagged(self):
+        from parse_trades import detect_add_on_losing
+        events = detect_add_on_losing([
+            self._f("2026-07-01 10:00:00.000", "BTCUSDT", "open_long", "100"),
+            self._f("2026-07-01 11:00:00.000", "BTCUSDT", "open_long", "90")])
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["symbol"], "BTCUSDT")
+        self.assertEqual(events[0]["price"], "90")
+        self.assertEqual(events[0]["avg_before"], "100")
+
+    def test_long_add_at_higher_price_not_flagged(self):
+        from parse_trades import detect_add_on_losing
+        events = detect_add_on_losing([
+            self._f("2026-07-01 10:00:00.000", "BTCUSDT", "open_long", "100"),
+            self._f("2026-07-01 11:00:00.000", "BTCUSDT", "open_long", "110")])
+        self.assertEqual(events, [])       # 顺势加仓不算
+
+    def test_short_add_at_higher_price_flagged(self):
+        from parse_trades import detect_add_on_losing
+        events = detect_add_on_losing([
+            self._f("2026-07-01 10:00:00.000", "ETHUSDT", "open_short", "100"),
+            self._f("2026-07-01 11:00:00.000", "ETHUSDT", "open_short", "110")])
+        self.assertEqual(len(events), 1)
+
+    def test_close_resets_round(self):
+        from parse_trades import detect_add_on_losing
+        events = detect_add_on_losing([
+            self._f("2026-07-01 10:00:00.000", "BTCUSDT", "open_long", "100"),
+            self._f("2026-07-01 11:00:00.000", "BTCUSDT", "close_long", "95"),
+            self._f("2026-07-01 12:00:00.000", "BTCUSDT", "open_long", "90")])
+        self.assertEqual(events, [])       # 平仓后开新回合，不与旧回合比价
+
+    def test_hedge_long_short_independent(self):
+        from parse_trades import detect_add_on_losing
+        events = detect_add_on_losing([
+            self._f("2026-07-01 10:00:00.000", "BTCUSDT", "open_long", "100"),
+            self._f("2026-07-01 10:30:00.000", "BTCUSDT", "open_short", "100"),
+            self._f("2026-07-01 11:00:00.000", "BTCUSDT", "open_long", "90")])
+        self.assertEqual(len(events), 1)   # 只有 long 侧劣化；short 侧独立
+        self.assertEqual(events[0]["position_side"], "open_long")
+
+    def test_weighted_average_basis(self):
+        from parse_trades import detect_add_on_losing
+        events = detect_add_on_losing([
+            self._f("2026-07-01 10:00:00.000", "BTCUSDT", "open_long", "100"),
+            self._f("2026-07-01 11:00:00.000", "BTCUSDT", "open_long", "90"),    # 事件1（vs 100）
+            self._f("2026-07-01 12:00:00.000", "BTCUSDT", "open_long", "96")])   # 96 > 加权均 95，不算
+        self.assertEqual(len(events), 1)
+
+    def test_bad_rows_skipped(self):
+        from parse_trades import detect_add_on_losing
+        events = detect_add_on_losing([
+            self._f("2026-07-01 10:00:00.000", "BTCUSDT", "open_long", "abc"),
+            self._f("2026-07-01 11:00:00.000", "BTCUSDT", "open_long", "90")])
+        self.assertEqual(events, [])       # 坏行跳过，不炸不误报
+
+    def test_partial_fills_same_second_cluster_as_one_event(self):
+        from parse_trades import detect_add_on_losing
+        events = detect_add_on_losing([
+            self._f("2026-07-01 10:00:00.000", "BTCUSDT", "open_long", "100"),
+            self._f("2026-07-01 11:00:00.100", "BTCUSDT", "open_long", "90", qty="1"),
+            self._f("2026-07-01 11:00:00.200", "BTCUSDT", "open_long", "90", qty="2"),
+            self._f("2026-07-01 11:00:00.300", "BTCUSDT", "open_long", "90", qty="1")])
+        self.assertEqual(len(events), 1)   # 同秒部分成交=同一决策，只记一次
+
+    def test_adds_in_different_seconds_are_separate_events(self):
+        from parse_trades import detect_add_on_losing
+        events = detect_add_on_losing([
+            self._f("2026-07-01 10:00:00.000", "BTCUSDT", "open_long", "100"),
+            self._f("2026-07-01 11:00:00.000", "BTCUSDT", "open_long", "90"),
+            self._f("2026-07-01 12:00:00.000", "BTCUSDT", "open_long", "80")])
+        self.assertEqual(len(events), 2)

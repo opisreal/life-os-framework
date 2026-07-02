@@ -68,3 +68,77 @@ def load_api_closed_pnl(path_ignored="", kind="closed_pnl_api", start_ms=None, e
     if kind != "closed_pnl_api":
         raise ValueError(f"unsupported kind: {kind!r}")
     return fetch_closed_pnl(start_ms, end_ms), []
+
+# ---------- fills（成交明细）→ trades.csv（2026-07-03 真实样本校准） ----------
+
+FILLS_SOURCE_FILE = "api:fills"
+
+# hedge_mode 下 (tradeSide, side) → position_side；单向持仓推导规则未实测，不猜（校准门）
+_POSITION_SIDE = {("open", "buy"): "open_long", ("open", "sell"): "open_short",
+                  ("close", "sell"): "close_long", ("close", "buy"): "close_short"}
+
+def normalize_fill(item):
+    """fills 单条 → trades.csv 内部 schema（risk/_schema.md §1）。
+    - time：cTime 毫秒 → 'YYYY-MM-DD HH:MM:SS.mmm'（固定 UTC+8，含毫秒——
+      同秒同价同量的合法重复靠毫秒区分）。真实返回大写 cTime（与 history-position
+      的小写 utime/ctime 相反），小写 ctime 兜底
+    - fee_amount = −Σ feeDetail[].totalFee（正=成本，同 closed-pnl 折叠口径）；
+      feeDetail 混币种整行拒绝（不同单位不可求和）
+    - posMode 非 hedge_mode 整行拒绝（position_side 推导规则未实测，交 warning 不猜）
+    - source_id = tradeId（唯一主键）；row_hash 用 parse_trades.row_hash（fills 字段集）"""
+    mode = (item.get("posMode") or "").strip()
+    if mode != "hedge_mode":
+        raise ValueError(f"fill {item.get('tradeId')}: posMode={mode!r} 未校准（仅 hedge_mode），跳行")
+    trade_side = (item.get("tradeSide") or "").strip().lower()
+    side = (item.get("side") or "").strip().lower()
+    pos = _POSITION_SIDE.get((trade_side, side))
+    if pos is None:
+        raise ValueError(f"fill {item.get('tradeId')}: (tradeSide={trade_side!r}, side={side!r}) 组合未校准，跳行")
+    fee_detail = item.get("feeDetail") or []
+    coins = {(f.get("feeCoin") or "").strip() for f in fee_detail}
+    if len(coins) > 1:
+        raise ValueError(f"fill {item.get('tradeId')}: feeDetail 混币种 {sorted(coins)}，不可求和，跳行")
+    fee_total = sum(float(f.get("totalFee") or 0) for f in fee_detail)
+    ms = int(item.get("cTime") or item["ctime"])
+    dt = datetime.fromtimestamp(ms / 1000, tz=_TZ_UTC8)
+    rec = {
+        "time": dt.strftime("%Y-%m-%d %H:%M:%S") + f".{ms % 1000:03d}",
+        "exchange": "bitget",
+        "market_type": "futures",
+        "symbol": item["symbol"].strip(),
+        "side": side,
+        "position_side": pos,
+        "price": item["price"].strip(),
+        "base_qty": item["baseVolume"].strip(),
+        "quote_qty": item["quoteVolume"].strip(),
+        "fee_amount": parse_trades._fmt_num(-fee_total),
+        "fee_asset": next(iter(coins), ""),
+        "source_id": item["tradeId"].strip(),
+        "source_file": FILLS_SOURCE_FILE,
+    }
+    rec["row_hash"] = parse_trades.row_hash(rec)
+    return rec
+
+def fetch_fills(start_ms=None, end_ms=None):
+    """拉取窗口内全部成交明细（游标分页 endId+idLessThan，每页 ≤100）→ (rows, warnings)。
+    单条归一化失败不炸整拉：跳行 + warning（含 tradeId 可溯源）。实调网络——测试不调用。"""
+    rows, warnings, cursor = [], [], None
+    while True:
+        data = bitget_api.fills(start_ms, end_ms, id_less_than=cursor)
+        items = (data or {}).get("fillList") or []
+        for it in items:
+            try:
+                rows.append(normalize_fill(it))
+            except (ValueError, KeyError) as e:
+                warnings.append(str(e))
+        end_id = (data or {}).get("endId")
+        if not end_id or len(items) < 100:
+            break
+        cursor = end_id
+    return rows, warnings
+
+def load_api_fills(path_ignored="", kind="fills_api", start_ms=None, end_ms=None):
+    """LOADERS 适配器（同 load_api_closed_pnl 约定）：(path, kind=...) → (rows, warnings)。"""
+    if kind != "fills_api":
+        raise ValueError(f"unsupported kind: {kind!r}")
+    return fetch_fills(start_ms, end_ms)

@@ -20,14 +20,26 @@ _TZ_UTC8 = timezone(timedelta(hours=8))   # 固定 UTC+8，与 close_time / 探�
 STORE_FIELDS = ["close_time", "exchange", "market_type", "symbol", "direction", "open_avg",
                 "close_avg", "qty", "realized_pnl", "fee", "source_id", "source_file", "row_hash", "setup"]
 
+TRADES_FIELDS = ["time", "exchange", "market_type", "symbol", "side", "position_side",
+                 "price", "base_qty", "quote_qty", "fee_amount", "fee_asset",
+                 "source_id", "source_file", "row_hash"]
+
 EQUITY_FIELDS = ["week", "as_of", "equity_usdt", "usdt_cny_rate", "equity_rmb", "net_flow_usdt", "note"]
+
+# kind → 落盘配置（fields/时间键/默认表/setup 归因列有无/suspected 摘要键）
+KINDS = {
+    "closed_pnl": {"fields": STORE_FIELDS, "time_key": "close_time", "store_name": "closed-pnl.csv",
+                   "has_setup": True, "suspected_keys": ("close_time", "symbol", "realized_pnl")},
+    "fills": {"fields": TRADES_FIELDS, "time_key": "time", "store_name": "trades.csv",
+              "has_setup": False, "suspected_keys": ("time", "symbol", "price")},
+}
 
 def build_parser():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("source_csv", nargs="?", help="源 CSV 路径（--source csv 必填；api 路径忽略）")
-    ap.add_argument("--store", default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "risk", "closed-pnl.csv"))
+    ap.add_argument("--store", default=None, help="落盘表路径；默认按 --kind 取 risk/closed-pnl.csv 或 risk/trades.csv")
     ap.add_argument("--exchange", default="bitget")
-    ap.add_argument("--kind", default="closed_pnl")
+    ap.add_argument("--kind", choices=tuple(KINDS), default="closed_pnl")
     ap.add_argument("--source", choices=("csv", "api"), default="csv")
     ap.add_argument("--since", help="api 限定：拉取窗口起点 YYYY-MM-DD（UTC+8 零点）；默认 90 天前（回溯上限）")
     ap.add_argument("--equity", action="store_true",
@@ -72,23 +84,33 @@ def _equity_auto(store_path):
 
 def run_import(args):
     """主逻辑（main() 的薄包装对象）：返回 JSON 报告 dict，不打印。测试直调此函数 mock 网络边界。"""
+    kcfg = KINDS[args.kind]
+    store = args.store or os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                       "..", "risk", kcfg["store_name"])
     window = None
     if args.source == "api":
         import fetch_bitget
         start_ms, end_ms, since_s, until_s = _api_window(args.since)
-        new_rows, warnings = fetch_bitget.fetch_closed_pnl(start_ms, end_ms), []
+        if args.kind == "fills":
+            new_rows, warnings = fetch_bitget.fetch_fills(start_ms, end_ms)
+        else:
+            new_rows, warnings = fetch_bitget.fetch_closed_pnl(start_ms, end_ms), []
         window = [since_s, until_s]
     else:
         if not args.source_csv:
             raise SystemExit("source_csv 必填（--source csv 路径）")
         if args.equity:
             raise SystemExit("--equity 仅在 --source api 下可用")
-        loader = getattr(parse_trades, parse_trades.LOADERS[(args.exchange, args.kind)])
+        try:
+            loader = getattr(parse_trades, parse_trades.LOADERS[(args.exchange, args.kind)])
+        except KeyError:
+            raise SystemExit(f"({args.exchange}, {args.kind}) 的 CSV 映射未校准"
+                             f"（exchange-schemas.md 补段后启用），当前仅支持 --source api")
         new_rows, warnings = loader(args.source_csv, kind=args.kind)
 
     existing = []
-    if os.path.exists(args.store):
-        with open(args.store, encoding="utf-8") as fh:
+    if os.path.exists(store):
+        with open(store, encoding="utf-8") as fh:
             existing = list(csv.DictReader(fh))
     seen_ids = set()      # id 命中 = 确定重复
     seen_hashes = {}      # hash → source_file（无 id 行的重放豁免判据）
@@ -111,7 +133,8 @@ def run_import(args):
             else:
                 suspected.append(r)               # 无 id 的跨文件 hash 命中 → 人工确认
             continue
-        r.setdefault("setup", "unlabeled")
+        if kcfg["has_setup"]:
+            r.setdefault("setup", "unlabeled")
         added.append(r)
         if sid:
             seen_ids.add(sid)
@@ -120,22 +143,23 @@ def run_import(args):
 
     if added:
         # 文件不存在或 0 字节（空文件 append 不补表头会让首行数据被当表头）都要写表头
-        write_header = not os.path.exists(args.store) or os.path.getsize(args.store) == 0
-        with open(args.store, "a", newline="", encoding="utf-8") as fh:
-            w = csv.DictWriter(fh, fieldnames=STORE_FIELDS)
+        write_header = not os.path.exists(store) or os.path.getsize(store) == 0
+        with open(store, "a", newline="", encoding="utf-8") as fh:
+            w = csv.DictWriter(fh, fieldnames=kcfg["fields"])
             if write_header:
                 w.writeheader()
-            w.writerows({k: r.get(k, "") for k in STORE_FIELDS} for r in added)
+            w.writerows({k: r.get(k, "") for k in kcfg["fields"]} for r in added)
 
-    weeks = sorted({r["close_time"][:10] for r in added})
+    tkey = kcfg["time_key"]
+    weeks = sorted({r[tkey][:10] for r in added})
     report = {"source": args.source,
               "added": len(added), "skipped": skipped, "suspected": len(suspected),
               "warnings": warnings, "date_range": weeks[:1] + weeks[-1:],
-              "suspected_rows": [{k: r.get(k) for k in ("close_time", "symbol", "realized_pnl")} for r in suspected]}
+              "suspected_rows": [{k: r.get(k) for k in kcfg["suspected_keys"]} for r in suspected]}
     if window:
         report["window"] = window
     if args.equity:
-        report["equity"] = _equity_auto(args.store)
+        report["equity"] = _equity_auto(store)
     return report
 
 def main(argv=None):
