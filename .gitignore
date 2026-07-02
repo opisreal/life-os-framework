@@ -24,6 +24,12 @@ Thumbs.db
 .agents/
 _temp/
 
+# 量化框架实验区：外部克隆仓库与运行时数据不入库（清单文档正常入库）
+05_finance/trys/frameworks/repos/
+05_finance/trys/frameworks/data/
+05_finance/trys/frameworks/.venv-research/
+05_finance/trys/frameworks/ft_userdata/
+
 # Python 字节码缓存
 __pycache__/
 
