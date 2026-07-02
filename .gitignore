@@ -30,3 +30,5 @@ __pycache__/
 # 通知/提醒脚本运行日志
 .tools/logs/*.log
 .tools/.env.private
+.tools/logs/*
+!.tools/logs/.gitkeep
